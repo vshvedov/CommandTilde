@@ -419,7 +419,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if popover.isShown {
                 popover.performClose(nil)
             } else {
+                // Activate the app and bring it to foreground
+                NSApp.activate(ignoringOtherApps: true)
+
+                // Show the popover
                 popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+
+                // Force focus on the popover content
+                if let contentViewController = popover.contentViewController {
+                    contentViewController.view.window?.makeKeyAndOrderFront(nil)
+                    contentViewController.view.window?.level = NSWindow.Level.statusBar
+                }
             }
         }
     }
