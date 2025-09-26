@@ -47,7 +47,7 @@ struct PopoverContentView: View {
         .onChange(of: navigationState.currentPath) { _, newPath in
             fileSystemManager.loadItems(at: newPath)
         }
-        .onDrop(of: [.fileURL, .image, .url, .data], isTargeted: nil) { providers in
+        .onDrop(of: [.fileURL, .image, .url, .data, .item], isTargeted: nil) { providers in
             dragAndDropManager.handleDrop(providers: providers)
         }
     }
@@ -233,7 +233,7 @@ struct ItemView: View {
         .onTapGesture {
             onTap(item)
         }
-        .onDrop(of: [.fileURL, .image, .url, .data], isTargeted: nil) { providers in
+        .onDrop(of: [.fileURL, .image, .url, .data, .item], isTargeted: nil) { providers in
             guard item.isDirectory else { return false }
             return dragAndDropManager.handleDropOnFolder(providers: providers, folder: item)
         }

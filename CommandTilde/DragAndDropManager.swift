@@ -30,154 +30,245 @@ class DragAndDropManager {
     private func handleDropToDestination(providers: [NSItemProvider], destination: URL) -> Bool {
         print("📦 Handling drop with \(providers.count) providers")
 
+        var handledAnyProvider = false
+
         for provider in providers {
             print("🔍 Available types: \(provider.registeredTypeIdentifiers)")
+            let providerHandled = processProvider(provider, destination: destination)
+            handledAnyProvider = handledAnyProvider || providerHandled
+        }
 
-            // Handle local files first
-            if provider.hasItemConformingToTypeIdentifier("public.file-url") {
-                provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { (item, error) in
-                    DispatchQueue.main.async {
-                        if let data = item as? Data,
-                           let url = URL(dataRepresentation: data, relativeTo: nil) {
-                            print("✅ Found local file URL: \(url)")
-                            self.copyFile(from: url, to: destination)
-                        }
-                    }
-                }
-                return true
+        if !handledAnyProvider {
+            print("❌ No supported data types found in providers")
+        }
+
+        return handledAnyProvider
+    }
+
+    private func processProvider(_ provider: NSItemProvider, destination: URL) -> Bool {
+        let identifiers = preferredTypeIdentifiers(for: provider)
+        guard !identifiers.isEmpty else {
+            print("❌ Provider returned no type identifiers")
+            return false
+        }
+
+        attemptLoad(provider: provider, destination: destination, typeIdentifiers: identifiers)
+        return true
+    }
+
+    private func preferredTypeIdentifiers(for provider: NSItemProvider) -> [String] {
+        var seen = Set<String>()
+        var identifiers: [String] = []
+
+        func appendIfNeeded(_ identifier: String) {
+            if seen.insert(identifier).inserted {
+                identifiers.append(identifier)
+            }
+        }
+
+        if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            appendIfNeeded(UTType.fileURL.identifier)
+        }
+
+        for identifier in provider.registeredTypeIdentifiers {
+            appendIfNeeded(identifier)
+        }
+
+        appendIfNeeded(UTType.item.identifier)
+        appendIfNeeded(UTType.data.identifier)
+        appendIfNeeded(UTType.url.identifier)
+
+        return identifiers
+    }
+
+    private func attemptLoad(provider: NSItemProvider, destination: URL, typeIdentifiers: [String]) {
+        guard let typeIdentifier = typeIdentifiers.first else {
+            print("❌ Exhausted type identifiers for provider")
+            return
+        }
+
+        let remainingIdentifiers = Array(typeIdentifiers.dropFirst())
+
+        provider.loadInPlaceFileRepresentation(forTypeIdentifier: typeIdentifier) { [weak self] url, _, error in
+            guard let self = self else { return }
+
+            if let url = url {
+                print("✅ In-place representation for \(typeIdentifier): \(url)")
+                self.copyFile(from: url, to: destination, preferredFilename: provider.suggestedName)
+                return
             }
 
-            // Handle WebP images specifically
-            else if provider.hasItemConformingToTypeIdentifier("org.webmproject.webp") ||
-                    provider.hasItemConformingToTypeIdentifier("public.webp") {
-                let webpType = provider.hasItemConformingToTypeIdentifier("org.webmproject.webp") ? "org.webmproject.webp" : "public.webp"
-                provider.loadItem(forTypeIdentifier: webpType, options: nil) { (item, error) in
-                    DispatchQueue.main.async {
-                        if let data = item as? Data {
-                            print("✅ Found WebP image data: \(data.count) bytes")
-                            let originalFilename = self.extractFilenameFromProvider(provider)
-                            self.saveImageData(data, type: webpType, originalFilename: originalFilename, to: destination)
-                        }
-                    }
-                }
-                return true
+            if let error = error {
+                print("⚠️ loadInPlaceFileRepresentation failed for \(typeIdentifier): \(error.localizedDescription)")
             }
 
-            // Handle direct image data (common for browser drags)
-            else if provider.hasItemConformingToTypeIdentifier("public.image") ||
-                    provider.hasItemConformingToTypeIdentifier("public.png") ||
-                    provider.hasItemConformingToTypeIdentifier("public.jpeg") ||
-                    provider.hasItemConformingToTypeIdentifier("com.compuserve.gif") ||
-                    provider.hasItemConformingToTypeIdentifier("public.tiff") ||
-                    provider.hasItemConformingToTypeIdentifier("public.heic") {
+            self.loadTemporaryFile(provider: provider, destination: destination, typeIdentifier: typeIdentifier, remainingIdentifiers: remainingIdentifiers)
+        }
+    }
 
-                // Find the most specific image type
-                let imageTypes = ["public.png", "public.jpeg", "com.compuserve.gif", "public.tiff", "public.heic", "public.image"]
-                let availableImageType = imageTypes.first { provider.hasItemConformingToTypeIdentifier($0) }
+    private func loadTemporaryFile(provider: NSItemProvider, destination: URL, typeIdentifier: String, remainingIdentifiers: [String]) {
+        provider.loadFileRepresentation(forTypeIdentifier: typeIdentifier) { [weak self] tempURL, error in
+            guard let self = self else { return }
 
-                if let imageType = availableImageType {
-                    provider.loadItem(forTypeIdentifier: imageType, options: nil) { (item, error) in
-                        DispatchQueue.main.async {
-                            if let error = error {
-                                print("❌ Error loading image: \(error)")
-                                return
-                            }
-
-                            var imageData: Data?
-                            var originalFilename: String?
-
-                            // Try different ways to get the data
-                            if let data = item as? Data {
-                                print("✅ Found direct image data (\(imageType)): \(data.count) bytes")
-                                imageData = data
-                                // Try to get filename from provider's suggested filename
-                                originalFilename = self.extractFilenameFromProvider(provider)
-                            } else if let image = item as? NSImage {
-                                print("🌄 Found NSImage, converting to data...")
-                                imageData = self.convertNSImageToData(image, type: imageType)
-                                originalFilename = self.extractFilenameFromProvider(provider)
-                            } else if let url = item as? URL {
-                                print("🔗 Found image URL: \(url)")
-                                imageData = try? Data(contentsOf: url)
-                                originalFilename = url.lastPathComponent
-                            } else {
-                                print("⚠️ Unknown item type: \(type(of: item))")
-                                // Try to load as generic object and convert
-                                if item != nil {
-                                    print("🔍 Attempting fallback data conversion...")
-                                    // Try to get image through pasteboard
-                                    if let pasteboardItem = NSPasteboard.general.pasteboardItems?.first {
-                                        if let data = pasteboardItem.data(forType: .tiff) {
-                                            imageData = data
-                                            print("✅ Got image data from pasteboard")
-                                        }
-                                    }
-                                }
-                                originalFilename = self.extractFilenameFromProvider(provider)
-                            }
-
-                            if let data = imageData {
-                                self.saveImageData(data, type: imageType, originalFilename: originalFilename, to: destination)
-                            } else {
-                                print("❌ Failed to extract image data from item")
-                            }
-                        }
-                    }
-                    return true
-                }
+            if let tempURL = tempURL {
+                print("✅ Temporary file representation for \(typeIdentifier): \(tempURL)")
+                self.copyFile(from: tempURL, to: destination, preferredFilename: provider.suggestedName)
+                return
             }
 
-            // Handle URLs (including web URLs)
-            else if provider.hasItemConformingToTypeIdentifier("public.url") {
-                provider.loadItem(forTypeIdentifier: "public.url", options: nil) { (item, error) in
-                    DispatchQueue.main.async {
-                        var targetURL: URL?
-
-                        if let data = item as? Data {
-                            targetURL = URL(dataRepresentation: data, relativeTo: nil)
-                        } else if let urlString = item as? String {
-                            targetURL = URL(string: urlString)
-                        } else if let url = item as? URL {
-                            targetURL = url
-                        }
-
-                        if let url = targetURL {
-                            print("✅ Found URL: \(url)")
-                            if url.scheme == "http" || url.scheme == "https" {
-                                self.downloadAndCopyFile(from: url, to: destination)
-                            } else {
-                                self.copyFile(from: url, to: destination)
-                            }
-                        } else {
-                            print("❌ Failed to parse URL from item: \(String(describing: item))")
-                        }
-                    }
-                }
-                return true
+            if let error = error {
+                print("⚠️ loadFileRepresentation failed for \(typeIdentifier): \(error.localizedDescription)")
             }
 
-            // Handle generic data as fallback
-            else if provider.hasItemConformingToTypeIdentifier("public.data") {
-                provider.loadItem(forTypeIdentifier: "public.data", options: nil) { (item, error) in
-                    DispatchQueue.main.async {
-                        if let data = item as? Data {
-                            print("✅ Found generic data: \(data.count) bytes")
-                            let originalFilename = self.extractFilenameFromProvider(provider)
-                            self.saveGenericData(data, originalFilename: originalFilename, to: destination)
-                        }
-                    }
-                }
+            self.loadItemRepresentation(provider: provider, destination: destination, typeIdentifier: typeIdentifier, remainingIdentifiers: remainingIdentifiers)
+        }
+    }
+
+    private func loadItemRepresentation(provider: NSItemProvider, destination: URL, typeIdentifier: String, remainingIdentifiers: [String]) {
+        provider.loadItem(forTypeIdentifier: typeIdentifier, options: nil) { [weak self] item, error in
+            guard let self = self else { return }
+
+            if let error = error {
+                print("⚠️ loadItem failed for \(typeIdentifier): \(error.localizedDescription)")
+            }
+
+            guard let item = item else {
+                self.tryNextType(provider: provider, destination: destination, remainingIdentifiers: remainingIdentifiers)
+                return
+            }
+
+            let handled = self.handleLoadedItem(item, typeIdentifier: typeIdentifier, provider: provider, destination: destination)
+
+            if !handled {
+                self.tryNextType(provider: provider, destination: destination, remainingIdentifiers: remainingIdentifiers)
+            }
+        }
+    }
+
+    private func tryNextType(provider: NSItemProvider, destination: URL, remainingIdentifiers: [String]) {
+        guard !remainingIdentifiers.isEmpty else {
+            print("❌ Could not process provider; no remaining type identifiers")
+            return
+        }
+
+        attemptLoad(provider: provider, destination: destination, typeIdentifiers: remainingIdentifiers)
+    }
+
+    private func handleLoadedItem(_ item: NSSecureCoding, typeIdentifier: String, provider: NSItemProvider, destination: URL) -> Bool {
+        if let url = resolveFileURL(from: item) {
+            print("✅ Resolved URL for \(typeIdentifier): \(url)")
+            if url.isFileURL {
+                copyFile(from: url, to: destination, preferredFilename: provider.suggestedName)
+            } else if let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
+                downloadAndCopyFile(from: url, to: destination)
+            } else {
+                print("⚠️ Unsupported URL scheme \(url.scheme ?? "none") for item; skipping copy")
+                return false
+            }
+            return true
+        }
+
+        if let data = item as? Data {
+            print("✅ Received Data for \(typeIdentifier): \(data.count) bytes")
+            let filename = provider.suggestedName ?? extractFilenameFromProvider(provider)
+            if isImageType(typeIdentifier) {
+                saveImageData(data, type: typeIdentifier, originalFilename: filename, to: destination)
+            } else {
+                saveGenericData(data, originalFilename: filename, typeIdentifier: typeIdentifier, to: destination)
+            }
+            return true
+        }
+
+        if let image = item as? NSImage {
+            print("🌄 Received NSImage for \(typeIdentifier)")
+            if let imageData = convertNSImageToData(image, type: typeIdentifier) {
+                let filename = provider.suggestedName ?? extractFilenameFromProvider(provider)
+                saveImageData(imageData, type: typeIdentifier, originalFilename: filename, to: destination)
                 return true
             }
         }
 
-        print("❌ No supported data types found in providers")
+        if let string = item as? String {
+            print("📝 Received String for \(typeIdentifier)")
+            if let url = URL(string: string), url.scheme != nil {
+                if url.scheme?.lowercased() == "http" || url.scheme?.lowercased() == "https" {
+                    downloadAndCopyFile(from: url, to: destination)
+                } else {
+                    copyFile(from: url, to: destination, preferredFilename: provider.suggestedName)
+                }
+            } else {
+                let data = Data(string.utf8)
+                let filename = provider.suggestedName ?? extractFilenameFromProvider(provider) ?? "dropped_text.txt"
+                saveGenericData(data, originalFilename: filename, typeIdentifier: typeIdentifier, to: destination)
+            }
+            return true
+        }
+
+        print("⚠️ Could not handle item of type \(type(of: item)) for identifier \(typeIdentifier)")
         return false
     }
 
-    private func copyFile(from sourceURL: URL, to destinationDirectory: URL) {
-        let fileName = sourceURL.lastPathComponent
+    private func resolveFileURL(from item: Any?) -> URL? {
+        if let url = item as? URL {
+            return url
+        }
+
+        if let data = item as? Data {
+            return URL(dataRepresentation: data, relativeTo: nil)
+        }
+
+        if let path = item as? String {
+            if path.hasPrefix("file://"), let url = URL(string: path) {
+                return url
+            }
+            return URL(fileURLWithPath: path)
+        }
+
+        if let nsURL = item as? NSURL {
+            return nsURL as URL
+        }
+
+        return nil
+    }
+
+    private func isImageType(_ typeIdentifier: String) -> Bool {
+        if let type = UTType(typeIdentifier) {
+            return type.conforms(to: .image)
+        }
+
+        let knownImageTypes: Set<String> = [
+            "public.image",
+            "public.png",
+            "public.jpeg",
+            "com.compuserve.gif",
+            "public.tiff",
+            "public.heic",
+            "public.heif",
+            "org.webmproject.webp",
+            "public.webp"
+        ]
+
+        return knownImageTypes.contains(typeIdentifier)
+    }
+
+    private func copyFile(from sourceURL: URL, to destinationDirectory: URL, preferredFilename: String? = nil) {
+        let preferredName = preferredFilename?.trimmingCharacters(in: .whitespacesAndNewlines)
+        var fileName = (preferredName?.isEmpty == false ? preferredName! : sourceURL.lastPathComponent)
+        fileName = (fileName as NSString).lastPathComponent
+
+        if fileName.isEmpty {
+            fileName = sourceURL.lastPathComponent.isEmpty ? "dropped_file" : sourceURL.lastPathComponent
+        }
+
         let destinationURL = destinationDirectory.appendingPathComponent(fileName)
+
+        let didAccessSecurityScope = sourceURL.startAccessingSecurityScopedResource()
+
+        defer {
+            if didAccessSecurityScope {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
 
         do {
             // Check if file already exists and create unique name if needed
@@ -185,8 +276,9 @@ class DragAndDropManager {
             var counter = 1
 
             while FileManager.default.fileExists(atPath: finalDestinationURL.path) {
-                let nameWithoutExtension = sourceURL.deletingPathExtension().lastPathComponent
-                let fileExtension = sourceURL.pathExtension
+                let baseURL = URL(fileURLWithPath: fileName)
+                let nameWithoutExtension = baseURL.deletingPathExtension().lastPathComponent
+                let fileExtension = baseURL.pathExtension
                 let newName = fileExtension.isEmpty ?
                     "\(nameWithoutExtension) (\(counter))" :
                     "\(nameWithoutExtension) (\(counter)).\(fileExtension)"
@@ -197,8 +289,10 @@ class DragAndDropManager {
             try FileManager.default.copyItem(at: sourceURL, to: finalDestinationURL)
             print("✅ Copied file to: \(finalDestinationURL.path)")
 
-            // Refresh the current directory view
-            fileSystemManager.loadItems(at: navigationState.currentPath)
+            // Refresh the current directory view on the main queue to keep UI updates predictable
+            DispatchQueue.main.async {
+                self.fileSystemManager.loadItems(at: self.navigationState.currentPath)
+            }
 
         } catch {
             print("❌ Failed to copy file: \(error)")
@@ -245,6 +339,11 @@ class DragAndDropManager {
                     }
                 }
 
+                fileName = (fileName as NSString).lastPathComponent
+                if fileName.isEmpty {
+                    fileName = "downloaded_file"
+                }
+
                 let destinationURL = destinationDirectory.appendingPathComponent(fileName)
 
                 // Check if file already exists and create unique name if needed
@@ -266,7 +365,9 @@ class DragAndDropManager {
                     print("✅ Downloaded and saved file to: \(finalDestinationURL.path)")
 
                     // Refresh the current directory view
-                    self.fileSystemManager.loadItems(at: self.navigationState.currentPath)
+                    DispatchQueue.main.async {
+                        self.fileSystemManager.loadItems(at: self.navigationState.currentPath)
+                    }
 
                 } catch {
                     print("❌ Failed to save downloaded file: \(error)")
@@ -340,14 +441,15 @@ class DragAndDropManager {
             fileName = "dropped_image.\(typeExtension)"
         }
 
-        let destinationURL = destinationDirectory.appendingPathComponent(fileName)
+        let sanitizedName = (fileName as NSString).lastPathComponent
+        let destinationURL = destinationDirectory.appendingPathComponent(sanitizedName)
 
         // Check if file already exists and create unique name if needed
         var finalDestinationURL = destinationURL
         var counter = 1
 
         while FileManager.default.fileExists(atPath: finalDestinationURL.path) {
-            let baseURL = URL(fileURLWithPath: fileName)
+            let baseURL = URL(fileURLWithPath: sanitizedName)
             let nameWithoutExtension = baseURL.deletingPathExtension().lastPathComponent
             let fileExtension = baseURL.pathExtension
             let newName = fileExtension.isEmpty ?
@@ -361,8 +463,9 @@ class DragAndDropManager {
             try data.write(to: finalDestinationURL)
             print("✅ Saved image data to: \(finalDestinationURL.path)")
 
-            // Refresh the current directory view
-            fileSystemManager.loadItems(at: navigationState.currentPath)
+            DispatchQueue.main.async {
+                self.fileSystemManager.loadItems(at: self.navigationState.currentPath)
+            }
 
         } catch {
             print("❌ Failed to save image data: \(error)")
@@ -403,9 +506,20 @@ class DragAndDropManager {
         return nil
     }
 
-    private func saveGenericData(_ data: Data, originalFilename: String?, to destinationDirectory: URL) {
-        // Use original filename if available, otherwise generate default name
-        let fileName = originalFilename?.isEmpty == false ? originalFilename! : "dropped_file"
+    private func saveGenericData(_ data: Data, originalFilename: String?, typeIdentifier: String?, to destinationDirectory: URL) {
+        let trimmedName = originalFilename?.trimmingCharacters(in: .whitespacesAndNewlines)
+        var fileName = (trimmedName?.isEmpty == false ? trimmedName! : "dropped_file")
+
+        if !fileName.contains("."), let typeIdentifier, let type = UTType(typeIdentifier), let ext = type.preferredFilenameExtension {
+            fileName.append(".\(ext)")
+        }
+
+        fileName = (fileName as NSString).lastPathComponent
+
+        if fileName.isEmpty {
+            fileName = "dropped_file"
+        }
+
         let destinationURL = destinationDirectory.appendingPathComponent(fileName)
 
         // Check if file already exists and create unique name if needed
@@ -427,8 +541,9 @@ class DragAndDropManager {
             try data.write(to: finalDestinationURL)
             print("✅ Saved generic data to: \(finalDestinationURL.path)")
 
-            // Refresh the current directory view
-            fileSystemManager.loadItems(at: navigationState.currentPath)
+            DispatchQueue.main.async {
+                self.fileSystemManager.loadItems(at: self.navigationState.currentPath)
+            }
 
         } catch {
             print("❌ Failed to save generic data: \(error)")
