@@ -1,15 +1,20 @@
 import SwiftUI
 
 struct SettingsView: View {
+    @ObservedObject var settings: AppSettings
+
     var body: some View {
-        VStack(spacing: 20) {
+        VStack(alignment: .leading, spacing: 24) {
             Text("Settings")
                 .font(.largeTitle)
                 .fontWeight(.bold)
 
-            Text("Settings panel coming soon...")
-                .font(.body)
-                .foregroundColor(.secondary)
+            Form {
+                Section("Feedback") {
+                    Toggle("Play sound after files are added", isOn: $settings.playDropSound)
+                }
+            }
+            .formStyle(.grouped)
 
             Spacer()
         }
@@ -19,5 +24,5 @@ struct SettingsView: View {
 }
 
 #Preview {
-    SettingsView()
+    SettingsView(settings: AppSettings())
 }

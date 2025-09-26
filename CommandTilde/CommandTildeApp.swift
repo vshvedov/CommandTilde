@@ -25,6 +25,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var popover: NSPopover!
     var fileSystemManager: FileSystemManager!
     var navigationState: NavigationState!
+    var appSettings: AppSettings!
 
     // Window controllers
     var settingsWindowController: SettingsWindowController?
@@ -40,6 +41,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Initialize file system manager
         fileSystemManager = FileSystemManager()
+        appSettings = AppSettings()
 
         // Create status bar item
         statusBarItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -64,6 +66,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let contentView = PopoverContentView(
             fileSystemManager: fileSystemManager,
             navigationState: navigationState,
+            appSettings: appSettings,
             onSettingsPressed: { [weak self] in
                 self?.showSettings()
             },
@@ -162,7 +165,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             popover.performClose(nil)
         }
         if settingsWindowController == nil {
-            settingsWindowController = SettingsWindowController()
+            settingsWindowController = SettingsWindowController(appSettings: appSettings)
         }
         settingsWindowController?.show()
     }

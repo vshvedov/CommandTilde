@@ -13,10 +13,33 @@ import UniformTypeIdentifiers
 class DragAndDropManager {
     private let fileSystemManager: FileSystemManager
     private let navigationState: NavigationState
+    private let appSettings: AppSettings
+    private lazy var dropSound: NSSound? = {
+        let possibleURLs: [URL?] = [
+            Bundle.main.url(forResource: "drop", withExtension: "wav"),
+            Bundle.main.url(forResource: "drop", withExtension: "wav", subdirectory: "Sounds")
+        ]
 
-    init(fileSystemManager: FileSystemManager, navigationState: NavigationState) {
+        for case let url? in possibleURLs {
+            if let sound = NSSound(contentsOf: url, byReference: false) {
+                sound.volume = 1.0
+                return sound
+            }
+        }
+
+        if let fallback = NSSound(named: NSSound.Name("Glass")) {
+            fallback.volume = 1.0
+            return fallback
+        }
+
+        print("⚠️ Unable to locate drop sound resource in bundle")
+        return nil
+    }()
+
+    init(fileSystemManager: FileSystemManager, navigationState: NavigationState, appSettings: AppSettings) {
         self.fileSystemManager = fileSystemManager
         self.navigationState = navigationState
+        self.appSettings = appSettings
     }
 
     func handleDrop(providers: [NSItemProvider]) -> Bool {
@@ -292,6 +315,7 @@ class DragAndDropManager {
             // Refresh the current directory view on the main queue to keep UI updates predictable
             DispatchQueue.main.async {
                 self.fileSystemManager.loadItems(at: self.navigationState.currentPath)
+                self.playDropFeedback()
             }
 
         } catch {
@@ -367,6 +391,7 @@ class DragAndDropManager {
                     // Refresh the current directory view
                     DispatchQueue.main.async {
                         self.fileSystemManager.loadItems(at: self.navigationState.currentPath)
+                        self.playDropFeedback()
                     }
 
                 } catch {
@@ -465,6 +490,7 @@ class DragAndDropManager {
 
             DispatchQueue.main.async {
                 self.fileSystemManager.loadItems(at: self.navigationState.currentPath)
+                self.playDropFeedback()
             }
 
         } catch {
@@ -543,10 +569,30 @@ class DragAndDropManager {
 
             DispatchQueue.main.async {
                 self.fileSystemManager.loadItems(at: self.navigationState.currentPath)
+                self.playDropFeedback()
             }
 
         } catch {
             print("❌ Failed to save generic data: \(error)")
+        }
+    }
+
+    private func playDropFeedback() {
+        let playSound: () -> Void = { [weak self] in
+            guard let self = self else { return }
+            guard self.appSettings.playDropSound else { return }
+
+            self.dropSound?.stop()
+            self.dropSound?.currentTime = 0
+            if self.dropSound?.play() != true {
+                print("⚠️ Failed to play drop sound")
+            }
+        }
+
+        if Thread.isMainThread {
+            playSound()
+        } else {
+            DispatchQueue.main.async(execute: playSound)
         }
     }
 }

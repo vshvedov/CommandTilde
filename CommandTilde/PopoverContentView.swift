@@ -23,12 +23,13 @@ struct PopoverContentView: View {
 
     init(fileSystemManager: FileSystemManager,
          navigationState: NavigationState,
+         appSettings: AppSettings,
          onSettingsPressed: @escaping () -> Void = {},
          onAboutPressed: @escaping () -> Void = {},
          onExitPressed: @escaping () -> Void = {}) {
         self.fileSystemManager = fileSystemManager
         self.navigationState = navigationState
-        self.dragAndDropManager = DragAndDropManager(fileSystemManager: fileSystemManager, navigationState: navigationState)
+        self.dragAndDropManager = DragAndDropManager(fileSystemManager: fileSystemManager, navigationState: navigationState, appSettings: appSettings)
         self.onSettingsPressed = onSettingsPressed
         self.onAboutPressed = onAboutPressed
         self.onExitPressed = onExitPressed

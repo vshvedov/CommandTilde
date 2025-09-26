@@ -9,6 +9,7 @@ import SwiftUI
 import AppKit
 import Foundation
 import Combine
+import UniformTypeIdentifiers
 import CoreGraphics
 import ImageIO
 
@@ -91,17 +92,25 @@ class FileSystemManager: ObservableObject {
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let contents = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles])
+                let contents = try FileManager.default.contentsOfDirectory(
+                    at: directory,
+                    includingPropertiesForKeys: [.contentModificationDateKey, .typeIdentifierKey],
+                    options: [.skipsHiddenFiles]
+                )
 
                 let fileSystemItems = contents.compactMap { url -> FileSystemItem? in
                     var isDirectory: ObjCBool = false
                     FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
 
                     do {
-                        let resourceValues = try url.resourceValues(forKeys: [.contentModificationDateKey])
+                        let resourceValues = try url.resourceValues(forKeys: [.contentModificationDateKey, .typeIdentifierKey])
                         let lastModified = resourceValues.contentModificationDate
 
-                        let icon = self.generateIcon(for: url, isDirectory: isDirectory.boolValue)
+                        let icon = self.generateIcon(
+                            for: url,
+                            typeIdentifier: resourceValues.typeIdentifier,
+                            isDirectory: isDirectory.boolValue
+                        )
                         icon.size = NSSize(width: 64, height: 64)
 
                         return FileSystemItem(
@@ -113,7 +122,7 @@ class FileSystemManager: ObservableObject {
                         )
                     } catch {
                         print("⚠️ Could not read metadata for: \(url.lastPathComponent)")
-                        let icon = self.generateIcon(for: url, isDirectory: isDirectory.boolValue)
+                        let icon = self.generateIcon(for: url, typeIdentifier: nil, isDirectory: isDirectory.boolValue)
                         icon.size = NSSize(width: 64, height: 64)
 
                         return FileSystemItem(
@@ -194,44 +203,52 @@ class FileSystemManager: ObservableObject {
         currentMonitoredDirectory = nil
     }
 
-    private func generateIcon(for url: URL, isDirectory: Bool) -> NSImage {
-        // For directories, use the standard workspace icon
+    private func generateIcon(for url: URL, typeIdentifier: String?, isDirectory: Bool) -> NSImage {
         if isDirectory {
-            return NSWorkspace.shared.icon(forFile: url.path)
+            let icon = NSWorkspace.shared.icon(forFile: url.path)
+            icon.size = NSSize(width: 64, height: 64)
+            return icon
         }
 
-        // Check if it's an image file by looking at the extension
-        let imageExtensions = ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp", "heic", "heif"]
-        let fileExtension = url.pathExtension.lowercased()
+        let defaultIcon = NSWorkspace.shared.icon(forFile: url.path)
+        defaultIcon.size = NSSize(width: 64, height: 64)
 
-        if imageExtensions.contains(fileExtension) {
-            return generateImageThumbnail(for: url) ?? NSWorkspace.shared.icon(forFile: url.path)
+        let imageExtensions: Set<String> = ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp", "heic", "heif"]
+
+        let isImageFile: Bool = {
+            if let typeIdentifier,
+               let type = UTType(typeIdentifier) {
+                return type.conforms(to: .image)
+            }
+            return imageExtensions.contains(url.pathExtension.lowercased())
+        }()
+
+        if isImageFile, let thumbnail = generateImageThumbnail(for: url) {
+            thumbnail.size = NSSize(width: 64, height: 64)
+            return thumbnail
         }
 
-        // For non-image files, use the standard workspace icon
-        return NSWorkspace.shared.icon(forFile: url.path)
+        return defaultIcon
     }
 
     private func generateImageThumbnail(for url: URL) -> NSImage? {
-        guard let imageSource = CGImageSourceCreateWithURL(url as CFURL, nil) else {
-            return nil
+        return autoreleasepool {
+            guard let imageSource = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+                return nil
+            }
+
+            let thumbnailOptions: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceCreateThumbnailFromImageIfAbsent: true,
+                kCGImageSourceThumbnailMaxPixelSize: 128
+            ]
+
+            guard let thumbnailImage = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, thumbnailOptions as CFDictionary) else {
+                return nil
+            }
+
+            return NSImage(cgImage: thumbnailImage, size: NSSize(width: 64, height: 64))
         }
-
-        // Create thumbnail options
-        let thumbnailOptions: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceThumbnailMaxPixelSize: 64
-        ]
-
-        // Generate the thumbnail
-        guard let thumbnailImage = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, thumbnailOptions as CFDictionary) else {
-            return nil
-        }
-
-        // Convert to NSImage
-        let thumbnail = NSImage(cgImage: thumbnailImage, size: NSSize(width: 64, height: 64))
-        return thumbnail
     }
 
     deinit {

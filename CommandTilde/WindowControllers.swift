@@ -10,15 +10,17 @@ import AppKit
 import Foundation
 
 class SettingsWindowController: NSObject, NSWindowDelegate {
+    private let appSettings: AppSettings
     var window: NSWindow!
 
-    override init() {
+    init(appSettings: AppSettings) {
+        self.appSettings = appSettings
         super.init()
         setupWindow()
     }
 
     private func setupWindow() {
-        let contentView = SettingsView()
+        let contentView = SettingsView(settings: appSettings)
         let hostingController = NSHostingController(rootView: contentView)
 
         window = NSWindow(
