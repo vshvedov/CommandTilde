@@ -679,7 +679,8 @@ struct PopoverContentView: View {
                     DispatchQueue.main.async {
                         if let data = item as? Data {
                             print("✅ Found WebP image data: \(data.count) bytes")
-                            self.saveImageData(data, type: webpType, to: destination)
+                            let originalFilename = self.extractFilenameFromProvider(provider)
+                            self.saveImageData(data, type: webpType, originalFilename: originalFilename, to: destination)
                         }
                     }
                 }
@@ -707,22 +708,27 @@ struct PopoverContentView: View {
                             }
 
                             var imageData: Data?
+                            var originalFilename: String?
 
                             // Try different ways to get the data
                             if let data = item as? Data {
                                 print("✅ Found direct image data (\(imageType)): \(data.count) bytes")
                                 imageData = data
+                                // Try to get filename from provider's suggested filename
+                                originalFilename = self.extractFilenameFromProvider(provider)
                             } else if let image = item as? NSImage {
                                 print("🌄 Found NSImage, converting to data...")
                                 imageData = self.convertNSImageToData(image, type: imageType)
+                                originalFilename = self.extractFilenameFromProvider(provider)
                             } else if let url = item as? URL {
                                 print("🔗 Found image URL: \(url)")
                                 imageData = try? Data(contentsOf: url)
+                                originalFilename = url.lastPathComponent
                             } else {
                                 print("⚠️ Unknown item type: \(type(of: item))")
                                 // Try to load as generic object and convert
-                                if let nsItem = item as? NSSecureCoding {
-                                    print("🔍 Attempting NSSecureCoding conversion...")
+                                if item != nil {
+                                    print("🔍 Attempting fallback data conversion...")
                                     // Try to get image through pasteboard
                                     if let pasteboardItem = NSPasteboard.general.pasteboardItems?.first {
                                         if let data = pasteboardItem.data(forType: .tiff) {
@@ -731,10 +737,11 @@ struct PopoverContentView: View {
                                         }
                                     }
                                 }
+                                originalFilename = self.extractFilenameFromProvider(provider)
                             }
 
                             if let data = imageData {
-                                self.saveImageData(data, type: imageType, to: destination)
+                                self.saveImageData(data, type: imageType, originalFilename: originalFilename, to: destination)
                             } else {
                                 print("❌ Failed to extract image data from item")
                             }
@@ -779,7 +786,8 @@ struct PopoverContentView: View {
                     DispatchQueue.main.async {
                         if let data = item as? Data {
                             print("✅ Found generic data: \(data.count) bytes")
-                            self.saveGenericData(data, to: destination)
+                            let originalFilename = self.extractFilenameFromProvider(provider)
+                            self.saveGenericData(data, originalFilename: originalFilename, to: destination)
                         }
                     }
                 }
@@ -915,27 +923,47 @@ struct PopoverContentView: View {
         }
     }
 
-    private func saveImageData(_ data: Data, type: String, to destinationDirectory: URL) {
+    private func saveImageData(_ data: Data, type: String, originalFilename: String?, to destinationDirectory: URL) {
         // Determine file extension from UTI type
-        let fileExtension: String
+        let typeExtension: String
         switch type {
         case "public.png":
-            fileExtension = "png"
+            typeExtension = "png"
         case "public.jpeg":
-            fileExtension = "jpg"
+            typeExtension = "jpg"
         case "com.compuserve.gif":
-            fileExtension = "gif"
+            typeExtension = "gif"
         case "public.tiff":
-            fileExtension = "tiff"
+            typeExtension = "tiff"
         case "org.webmproject.webp", "public.webp":
-            fileExtension = "webp"
+            typeExtension = "webp"
         case "public.heic":
-            fileExtension = "heic"
+            typeExtension = "heic"
         default:
-            fileExtension = "png" // Default fallback
+            typeExtension = "png" // Default fallback
         }
 
-        let fileName = "dropped_image.\(fileExtension)"
+        // Use original filename if available, otherwise generate default name
+        let fileName: String
+        if let originalName = originalFilename, !originalName.isEmpty {
+            // Check if original filename has extension
+            let originalURL = URL(fileURLWithPath: originalName)
+            let originalExtension = originalURL.pathExtension.lowercased()
+
+            // Use original extension if it matches the data type, otherwise use type extension
+            if originalExtension == typeExtension || originalExtension == "jpeg" && typeExtension == "jpg" {
+                fileName = originalName
+            } else if originalExtension.isEmpty {
+                // Original name has no extension, add the type extension
+                fileName = "\(originalName).\(typeExtension)"
+            } else {
+                // Original has different extension, replace it
+                fileName = "\(originalURL.deletingPathExtension().lastPathComponent).\(typeExtension)"
+            }
+        } else {
+            fileName = "dropped_image.\(typeExtension)"
+        }
+
         let destinationURL = destinationDirectory.appendingPathComponent(fileName)
 
         // Check if file already exists and create unique name if needed
@@ -943,8 +971,12 @@ struct PopoverContentView: View {
         var counter = 1
 
         while FileManager.default.fileExists(atPath: finalDestinationURL.path) {
-            let nameWithoutExtension = "dropped_image"
-            let newName = "\(nameWithoutExtension) (\(counter)).\(fileExtension)"
+            let baseURL = URL(fileURLWithPath: fileName)
+            let nameWithoutExtension = baseURL.deletingPathExtension().lastPathComponent
+            let fileExtension = baseURL.pathExtension
+            let newName = fileExtension.isEmpty ?
+                "\(nameWithoutExtension) (\(counter))" :
+                "\(nameWithoutExtension) (\(counter)).\(fileExtension)"
             finalDestinationURL = destinationDirectory.appendingPathComponent(newName)
             counter += 1
         }
@@ -961,8 +993,43 @@ struct PopoverContentView: View {
         }
     }
 
-    private func saveGenericData(_ data: Data, to destinationDirectory: URL) {
-        let fileName = "dropped_file"
+    private func extractFilenameFromProvider(_ provider: NSItemProvider) -> String? {
+        // Try to get the suggested filename from the item provider
+        if let suggestedName = provider.suggestedName {
+            print("🏷️ Found suggested filename: \(suggestedName)")
+            return suggestedName
+        }
+
+        // Try to extract from registered type identifiers if they contain filename info
+        for typeId in provider.registeredTypeIdentifiers {
+            // Look for file URL type which might contain filename info
+            if typeId.contains("file-url") || typeId.contains("public.file-url") {
+                // This is handled separately in the main drag handler
+                continue
+            }
+
+            // Try to infer filename from type identifiers that might contain it
+            if typeId.contains(".") {
+                let parts = typeId.split(separator: ".")
+                if parts.count > 1 {
+                    let lastPart = String(parts.last!)
+                    // Skip common UTI components that aren't filenames
+                    if !["public", "com", "org", "image", "data", "file", "url"].contains(lastPart.lowercased()) {
+                        print("🔍 Trying to extract filename from UTI: \(typeId)")
+                        // This might be a filename component, but it's speculative
+                        // We'll return nil here to avoid false positives
+                    }
+                }
+            }
+        }
+
+        print("❓ No filename found in provider metadata")
+        return nil
+    }
+
+    private func saveGenericData(_ data: Data, originalFilename: String?, to destinationDirectory: URL) {
+        // Use original filename if available, otherwise generate default name
+        let fileName = originalFilename?.isEmpty == false ? originalFilename! : "dropped_file"
         let destinationURL = destinationDirectory.appendingPathComponent(fileName)
 
         // Check if file already exists and create unique name if needed
@@ -970,7 +1037,12 @@ struct PopoverContentView: View {
         var counter = 1
 
         while FileManager.default.fileExists(atPath: finalDestinationURL.path) {
-            let newName = "\(fileName) (\(counter))"
+            let baseURL = URL(fileURLWithPath: fileName)
+            let nameWithoutExtension = baseURL.deletingPathExtension().lastPathComponent
+            let fileExtension = baseURL.pathExtension
+            let newName = fileExtension.isEmpty ?
+                "\(nameWithoutExtension) (\(counter))" :
+                "\(nameWithoutExtension) (\(counter)).\(fileExtension)"
             finalDestinationURL = destinationDirectory.appendingPathComponent(newName)
             counter += 1
         }
