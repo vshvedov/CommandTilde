@@ -10,16 +10,47 @@ import AppKit
 import Foundation
 import Combine
 
-struct DirectoryItem {
+struct FileSystemItem {
     let name: String
     let icon: NSImage
     let url: URL
+    let isDirectory: Bool
+    let lastModified: Date?
 }
 
-class DirectoryManager: ObservableObject {
-    @Published var directories: [DirectoryItem] = []
+class NavigationState: ObservableObject {
+    @Published var currentPath: URL
+    @Published var navigationHistory: [URL] = []
+
+    init(rootPath: URL) {
+        self.currentPath = rootPath
+        self.navigationHistory = [rootPath]
+    }
+
+    func navigateToParent() {
+        let parentURL = currentPath.deletingLastPathComponent()
+        if navigationHistory.count > 1 {
+            navigationHistory.removeLast()
+            currentPath = navigationHistory.last ?? parentURL
+        }
+    }
+
+    func navigateTo(url: URL) {
+        navigationHistory.append(url)
+        currentPath = url
+    }
+
+    var canGoBack: Bool {
+        return navigationHistory.count > 1
+    }
+}
+
+class FileSystemManager: ObservableObject {
+    @Published var items: [FileSystemItem] = []
+    @Published var isLoading = false
     private let folderName = "CommandTilde"
     private var fileSystemWatcher: DispatchSourceFileSystemObject?
+    private let imageExtensions = ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp", "heic", "heif"]
 
     var commandTildeURL: URL {
         let homeURL = FileManager.default.homeDirectoryForCurrentUser
@@ -45,16 +76,17 @@ class DirectoryManager: ObservableObject {
             print("📁 CommandTilde folder already exists")
         }
 
-        loadDirectories()
-        setupFileSystemWatcher()
+        loadItems(at: commandTildeURL)
+        setupFileSystemWatcher(for: commandTildeURL)
     }
 
-    private func setupFileSystemWatcher() {
-        let commandTildeURL = commandTildeURL
+    func setupFileSystemWatcher(for url: URL) {
+        // Cancel existing watcher
+        fileSystemWatcher?.cancel()
 
-        let fileDescriptor = open(commandTildeURL.path, O_EVTONLY)
+        let fileDescriptor = open(url.path, O_EVTONLY)
         guard fileDescriptor >= 0 else {
-            print("❌ Failed to open directory for monitoring")
+            print("❌ Failed to open directory for monitoring: \(url.path)")
             return
         }
 
@@ -66,7 +98,7 @@ class DirectoryManager: ObservableObject {
 
         fileSystemWatcher?.setEventHandler { [weak self] in
             print("📁 Directory changed, reloading...")
-            self?.loadDirectories()
+            self?.loadItems(at: url)
         }
 
         fileSystemWatcher?.setCancelHandler {
@@ -74,37 +106,119 @@ class DirectoryManager: ObservableObject {
         }
 
         fileSystemWatcher?.resume()
-        print("👀 Started monitoring CommandTilde directory for changes")
+        print("👀 Started monitoring directory for changes: \(url.path)")
     }
 
     deinit {
         fileSystemWatcher?.cancel()
     }
 
-    func loadDirectories() {
-        let commandTildeURL = commandTildeURL
+    func loadItems(at url: URL) {
+        isLoading = true
 
-        do {
-            let contents = try FileManager.default.contentsOfDirectory(at: commandTildeURL, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
 
-            directories = contents.compactMap { url in
-                let isDirectory = try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory
-                guard isDirectory == true else { return nil }
+            do {
+                let contents = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey], options: [.skipsHiddenFiles])
 
-                let icon = getIconForDirectory(at: url)
-                return DirectoryItem(name: url.lastPathComponent, icon: icon, url: url)
-            }.sorted { $0.name < $1.name }
+                let newItems = contents.compactMap { itemURL -> FileSystemItem? in
+                    let resourceValues = try? itemURL.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey])
+                    let isDirectory = resourceValues?.isDirectory ?? false
+                    let lastModified = resourceValues?.contentModificationDate
 
-        } catch {
-            print("Failed to load directories: \(error)")
-            directories = []
+                    let icon = self.getIcon(for: itemURL, isDirectory: isDirectory)
+                    return FileSystemItem(
+                        name: itemURL.lastPathComponent,
+                        icon: icon,
+                        url: itemURL,
+                        isDirectory: isDirectory,
+                        lastModified: lastModified
+                    )
+                }.sorted { item1, item2 in
+                    // Sort directories first, then by name
+                    if item1.isDirectory != item2.isDirectory {
+                        return item1.isDirectory
+                    }
+                    return item1.name.localizedCaseInsensitiveCompare(item2.name) == .orderedAscending
+                }
+
+                DispatchQueue.main.async {
+                    self.items = newItems
+                    self.isLoading = false
+                }
+
+            } catch {
+                print("Failed to load items: \(error)")
+                DispatchQueue.main.async {
+                    self.items = []
+                    self.isLoading = false
+                }
+            }
         }
     }
 
-    private func getIconForDirectory(at url: URL) -> NSImage {
+    private func getIcon(for url: URL, isDirectory: Bool) -> NSImage {
+        let fileExtension = url.pathExtension.lowercased()
+
+        // Check if it's an image file and generate thumbnail
+        if !isDirectory && imageExtensions.contains(fileExtension) {
+            if let thumbnail = generateImageThumbnail(for: url) {
+                return thumbnail
+            }
+        }
+
+        // Fall back to system icon
         let icon = NSWorkspace.shared.icon(forFile: url.path)
         icon.size = NSSize(width: 64, height: 64)
         return icon
+    }
+
+    private func generateImageThumbnail(for url: URL) -> NSImage? {
+        guard let imageSource = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
+            return nil
+        }
+
+        let thumbnailSize = CGSize(width: 64, height: 64)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+
+        guard let context = CGContext(data: nil,
+                                      width: Int(thumbnailSize.width),
+                                      height: Int(thumbnailSize.height),
+                                      bitsPerComponent: 8,
+                                      bytesPerRow: 0,
+                                      space: colorSpace,
+                                      bitmapInfo: bitmapInfo) else {
+            return nil
+        }
+
+        // Calculate aspect ratio
+        let imageWidth = CGFloat(image.width)
+        let imageHeight = CGFloat(image.height)
+        let aspectRatio = imageWidth / imageHeight
+
+        var drawRect: CGRect
+        if aspectRatio > 1 {
+            // Wide image
+            let height = thumbnailSize.height
+            let width = height * aspectRatio
+            drawRect = CGRect(x: (thumbnailSize.width - width) / 2, y: 0, width: width, height: height)
+        } else {
+            // Tall image
+            let width = thumbnailSize.width
+            let height = width / aspectRatio
+            drawRect = CGRect(x: 0, y: (thumbnailSize.height - height) / 2, width: width, height: height)
+        }
+
+        context.draw(image, in: drawRect)
+
+        guard let thumbnailImage = context.makeImage() else {
+            return nil
+        }
+
+        return NSImage(cgImage: thumbnailImage, size: thumbnailSize)
     }
 }
 
@@ -220,7 +334,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var popover: NSPopover!
     var globalEventMonitor: Any?
     var localEventMonitor: Any?
-    var directoryManager = DirectoryManager()
+    var fileSystemManager = FileSystemManager()
+    var navigationState: NavigationState!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Hide dock icon and make app accessory
@@ -247,14 +362,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         popover.behavior = .transient
         popover.animates = true
 
+        // Initialize navigation state
+        navigationState = NavigationState(rootPath: fileSystemManager.commandTildeURL)
+
         // Create the content view
-        let contentView = PopoverContentView(directoryManager: directoryManager)
+        let contentView = PopoverContentView(fileSystemManager: fileSystemManager, navigationState: navigationState)
         let hostingController = NSHostingController(rootView: contentView)
         hostingController.view.translatesAutoresizingMaskIntoConstraints = false
         popover.contentViewController = hostingController
 
         // Setup CommandTilde folder
-        directoryManager.setupCommandTildeFolder()
+        fileSystemManager.setupCommandTildeFolder()
 
         // Register global hotkey for Command+Tilde
         setupGlobalHotkey()
@@ -322,68 +440,118 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 struct PopoverContentView: View {
-    @ObservedObject var directoryManager: DirectoryManager
+    @ObservedObject var fileSystemManager: FileSystemManager
+    @ObservedObject var navigationState: NavigationState
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
+            // Header with Navigation
             HStack {
-                Text("CommandTilde Folders")
-                    .font(.headline)
-                    .fontWeight(.semibold)
+                // Back Button
+                Button(action: {
+                    navigationState.navigateToParent()
+                    fileSystemManager.loadItems(at: navigationState.currentPath)
+                    fileSystemManager.setupFileSystemWatcher(for: navigationState.currentPath)
+                }) {
+                    Image(systemName: "chevron.left")
+                        .imageScale(.medium)
+                }
+                .buttonStyle(BorderlessButtonStyle())
+                .disabled(!navigationState.canGoBack)
+                .help("Go Back")
+
+                // Current Path
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(getCurrentFolderName())
+                        .font(.headline)
+                        .fontWeight(.semibold)
+                        .lineLimit(1)
+
+                    if navigationState.currentPath != fileSystemManager.commandTildeURL {
+                        Text(getRelativePath())
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                }
 
                 Spacer()
 
+                // Refresh Button
                 Button(action: {
-                    directoryManager.loadDirectories()
+                    fileSystemManager.loadItems(at: navigationState.currentPath)
                 }) {
                     Image(systemName: "arrow.clockwise")
                         .imageScale(.medium)
                 }
                 .buttonStyle(BorderlessButtonStyle())
+                .help("Refresh")
             }
             .padding(.horizontal, 16)
             .padding(.top, 16)
 
             // Content Area
             VStack {
-                if directoryManager.directories.isEmpty {
+                if fileSystemManager.isLoading {
+                    VStack(spacing: 12) {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle())
+
+                        Text("Loading...")
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if fileSystemManager.items.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "folder.badge.plus")
                             .font(.system(size: 40))
                             .foregroundColor(.secondary)
 
-                        Text("No folders found")
+                        Text("No items found")
                             .font(.body)
                             .foregroundColor(.secondary)
 
-                        Text("Create folders in ~/CommandTilde/")
+                        Text(navigationState.currentPath == fileSystemManager.commandTildeURL ? "Create folders and files in ~/CommandTilde/" : "This folder is empty")
                             .font(.caption)
                             .foregroundColor(.secondary.opacity(0.7))
+                            .multilineTextAlignment(.center)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ScrollView {
                         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16), count: 4), spacing: 16) {
-                            ForEach(directoryManager.directories, id: \.name) { directory in
+                            ForEach(fileSystemManager.items, id: \.name) { item in
                                 VStack(spacing: 8) {
-                                    Image(nsImage: directory.icon)
+                                    Image(nsImage: item.icon)
                                         .resizable()
                                         .aspectRatio(contentMode: .fit)
                                         .frame(width: 64, height: 64)
+                                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 8)
+                                                .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                                        )
 
-                                    Text(directory.name)
-                                        .font(.caption)
-                                        .lineLimit(2)
-                                        .multilineTextAlignment(.center)
-                                        .truncationMode(.middle)
-                                        .frame(width: 80)
+                                    VStack(spacing: 2) {
+                                        Text(item.name)
+                                            .font(.caption)
+                                            .lineLimit(2)
+                                            .multilineTextAlignment(.center)
+                                            .truncationMode(.middle)
+                                            .frame(width: 80)
+
+                                        if !item.isDirectory {
+                                            Text(formatFileSize(for: item.url))
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                        }
+                                    }
                                 }
                                 .padding(.vertical, 8)
                                 .background(Color.clear)
                                 .onTapGesture {
-                                    print("Tapped folder: \(directory.name)")
-                                    NSWorkspace.shared.open(directory.url)
+                                    handleItemTap(item)
                                 }
                                 .onHover { isHovered in
                                     // Add subtle hover effect if needed
@@ -397,11 +565,20 @@ struct PopoverContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
+            .onChange(of: navigationState.currentPath) {
+                fileSystemManager.loadItems(at: navigationState.currentPath)
+                fileSystemManager.setupFileSystemWatcher(for: navigationState.currentPath)
+            }
 
             // Bottom Toolbar
             Divider()
 
             HStack {
+                // Path info
+                Text("\(fileSystemManager.items.count) items")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
                 Spacer()
 
                 HStack(spacing: 20) {
@@ -438,6 +615,41 @@ struct PopoverContentView: View {
         }
         .frame(width: 520, height: 400)
         .background(Color(NSColor.controlBackgroundColor))
+    }
+
+    private func handleItemTap(_ item: FileSystemItem) {
+        if item.isDirectory {
+            // Navigate into the directory
+            navigationState.navigateTo(url: item.url)
+        } else {
+            // Open file with default application
+            NSWorkspace.shared.open(item.url)
+        }
+    }
+
+    private func getCurrentFolderName() -> String {
+        if navigationState.currentPath == fileSystemManager.commandTildeURL {
+            return "CommandTilde"
+        } else {
+            return navigationState.currentPath.lastPathComponent
+        }
+    }
+
+    private func getRelativePath() -> String {
+        let relativePath = String(navigationState.currentPath.path.dropFirst(fileSystemManager.commandTildeURL.path.count))
+        return relativePath.isEmpty ? "/" : relativePath
+    }
+
+    private func formatFileSize(for url: URL) -> String {
+        do {
+            let resourceValues = try url.resourceValues(forKeys: [.fileSizeKey])
+            if let fileSize = resourceValues.fileSize {
+                return ByteCountFormatter.string(fromByteCount: Int64(fileSize), countStyle: .file)
+            }
+        } catch {
+            // Ignore errors
+        }
+        return ""
     }
 
     private func openSettingsWindow() {
