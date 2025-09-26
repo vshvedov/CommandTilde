@@ -14,11 +14,10 @@ struct SettingsView: View {
             Spacer()
         }
         .padding()
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(width: 480, height: 320)
     }
 }
 
 #Preview {
     SettingsView()
-        .frame(width: 400, height: 300)
 }

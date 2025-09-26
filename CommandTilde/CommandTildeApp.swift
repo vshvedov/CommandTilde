@@ -120,8 +120,8 @@ class SettingsWindowController: NSObject, NSWindowDelegate {
             let hostingController = NSHostingController(rootView: settingsView)
 
             window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
-                styleMask: [.titled, .closable, .resizable],
+                contentRect: NSRect(x: 0, y: 0, width: 480, height: 320),
+                styleMask: [.titled, .closable],
                 backing: .buffered,
                 defer: false
             )
@@ -144,7 +144,7 @@ class SettingsWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    func windowDidClose(_ notification: Notification) {
+    private func windowDidClose(_ notification: Notification) {
         if let closingWindow = notification.object as? NSWindow, closingWindow == window {
             DispatchQueue.main.async { [weak self] in
                 self?.window = nil
@@ -165,7 +165,7 @@ class AboutWindowController: NSObject, NSWindowDelegate {
             let hostingController = NSHostingController(rootView: aboutView)
 
             window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 350, height: 200),
+                contentRect: NSRect(x: 0, y: 0, width: 360, height: 320),
                 styleMask: [.titled, .closable],
                 backing: .buffered,
                 defer: false
@@ -189,7 +189,7 @@ class AboutWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    func windowDidClose(_ notification: Notification) {
+    private func windowDidClose(_ notification: Notification) {
         if let closingWindow = notification.object as? NSWindow, closingWindow == window {
             DispatchQueue.main.async { [weak self] in
                 self?.window = nil
@@ -246,7 +246,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Create the content view
         let contentView = PopoverContentView(directoryManager: directoryManager)
-        popover.contentViewController = NSHostingController(rootView: contentView)
+        let hostingController = NSHostingController(rootView: contentView)
+        hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+        popover.contentViewController = hostingController
 
         // Setup CommandTilde folder
         directoryManager.setupCommandTildeFolder()
