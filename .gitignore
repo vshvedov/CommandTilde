@@ -119,6 +119,8 @@ Temporary Items
 # IDEs
 .vscode/
 .idea/
+CLAUDE.md
+.claude/
 
 # Temporary files
 *.tmp
