@@ -452,6 +452,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 struct PopoverContentView: View {
     @ObservedObject var fileSystemManager: FileSystemManager
     @ObservedObject var navigationState: NavigationState
+    @State private var isDragOver = false
+    @State private var dragOverItem: String? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -554,12 +556,27 @@ struct PopoverContentView: View {
                                     }
                                 }
                                 .padding(.vertical, 8)
-                                .background(Color.clear)
+                                .background(
+                                    // Highlight background when dragging over a folder
+                                    item.isDirectory && dragOverItem == item.name ?
+                                        Color.blue.opacity(0.2) : Color.clear
+                                )
+                                .cornerRadius(8)
                                 .onTapGesture {
                                     handleItemTap(item)
                                 }
+                                .onDrop(of: ["public.file-url", "public.url"], isTargeted: .constant(false)) { providers in
+                                    // Only allow drops on directories
+                                    guard item.isDirectory else { return false }
+                                    return handleDropOnFolder(providers: providers, folder: item)
+                                }
                                 .onHover { isHovered in
-                                    // Add subtle hover effect if needed
+                                    // Update drag over state for visual feedback
+                                    if isHovered && item.isDirectory {
+                                        dragOverItem = item.name
+                                    } else {
+                                        dragOverItem = nil
+                                    }
                                 }
                             }
                         }
@@ -619,7 +636,147 @@ struct PopoverContentView: View {
             .padding(.vertical, 12)
         }
         .frame(width: 520, height: 400)
-        .background(Color(NSColor.controlBackgroundColor))
+        .background(isDragOver ? Color.blue.opacity(0.1) : Color(NSColor.controlBackgroundColor))
+        .onDrop(of: ["public.file-url", "public.url"], isTargeted: $isDragOver) { providers in
+            handleDrop(providers: providers)
+        }
+    }
+
+    private func handleDrop(providers: [NSItemProvider]) -> Bool {
+        return handleDropToDestination(providers: providers, destination: navigationState.currentPath)
+    }
+
+    private func handleDropOnFolder(providers: [NSItemProvider], folder: FileSystemItem) -> Bool {
+        guard folder.isDirectory else { return false }
+        return handleDropToDestination(providers: providers, destination: folder.url)
+    }
+
+    private func handleDropToDestination(providers: [NSItemProvider], destination: URL) -> Bool {
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier("public.file-url") {
+                provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { (item, error) in
+                    DispatchQueue.main.async {
+                        if let data = item as? Data,
+                           let url = URL(dataRepresentation: data, relativeTo: nil) {
+                            self.copyFile(from: url, to: destination)
+                        }
+                    }
+                }
+                return true
+            } else if provider.hasItemConformingToTypeIdentifier("public.url") {
+                provider.loadItem(forTypeIdentifier: "public.url", options: nil) { (item, error) in
+                    DispatchQueue.main.async {
+                        if let data = item as? Data,
+                           let url = URL(dataRepresentation: data, relativeTo: nil) {
+                            // Handle web URLs by downloading the content
+                            self.downloadAndCopyFile(from: url, to: destination)
+                        }
+                    }
+                }
+                return true
+            }
+        }
+        return false
+    }
+
+    private func copyFile(from sourceURL: URL, to destinationDirectory: URL) {
+        let fileName = sourceURL.lastPathComponent
+        let destinationURL = destinationDirectory.appendingPathComponent(fileName)
+
+        do {
+            // Check if file already exists and create unique name if needed
+            var finalDestinationURL = destinationURL
+            var counter = 1
+
+            while FileManager.default.fileExists(atPath: finalDestinationURL.path) {
+                let nameWithoutExtension = sourceURL.deletingPathExtension().lastPathComponent
+                let fileExtension = sourceURL.pathExtension
+                let newName = fileExtension.isEmpty ?
+                    "\(nameWithoutExtension) (\(counter))" :
+                    "\(nameWithoutExtension) (\(counter)).\(fileExtension)"
+                finalDestinationURL = destinationDirectory.appendingPathComponent(newName)
+                counter += 1
+            }
+
+            try FileManager.default.copyItem(at: sourceURL, to: finalDestinationURL)
+            print("✅ Copied file to: \(finalDestinationURL.path)")
+
+            // Refresh the current directory view
+            fileSystemManager.loadItems(at: navigationState.currentPath)
+
+        } catch {
+            print("❌ Failed to copy file: \(error)")
+        }
+    }
+
+    private func downloadAndCopyFile(from url: URL, to destinationDirectory: URL) {
+        guard url.scheme == "http" || url.scheme == "https" else {
+            print("❌ Unsupported URL scheme: \(url.scheme ?? "unknown")")
+            return
+        }
+
+        URLSession.shared.dataTask(with: url) { data, response, error in
+            DispatchQueue.main.async {
+                guard let data = data, error == nil else {
+                    print("❌ Failed to download file: \(error?.localizedDescription ?? "Unknown error")")
+                    return
+                }
+
+                // Determine file name from URL or response
+                var fileName = url.lastPathComponent
+                if fileName.isEmpty || !fileName.contains(".") {
+                    if let response = response as? HTTPURLResponse,
+                       let contentDisposition = response.allHeaderFields["Content-Disposition"] as? String,
+                       let range = contentDisposition.range(of: "filename=") {
+                        let startIndex = contentDisposition.index(range.upperBound, offsetBy: 0)
+                        fileName = String(contentDisposition[startIndex...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    } else {
+                        // Guess extension from content type
+                        if let response = response as? HTTPURLResponse,
+                           let contentType = response.allHeaderFields["Content-Type"] as? String {
+                            if contentType.contains("image/jpeg") || contentType.contains("image/jpg") {
+                                fileName = "downloaded_image.jpg"
+                            } else if contentType.contains("image/png") {
+                                fileName = "downloaded_image.png"
+                            } else if contentType.contains("image/gif") {
+                                fileName = "downloaded_image.gif"
+                            } else {
+                                fileName = "downloaded_file"
+                            }
+                        } else {
+                            fileName = "downloaded_file"
+                        }
+                    }
+                }
+
+                let destinationURL = destinationDirectory.appendingPathComponent(fileName)
+
+                // Check if file already exists and create unique name if needed
+                var finalDestinationURL = destinationURL
+                var counter = 1
+
+                while FileManager.default.fileExists(atPath: finalDestinationURL.path) {
+                    let nameWithoutExtension = destinationURL.deletingPathExtension().lastPathComponent
+                    let fileExtension = destinationURL.pathExtension
+                    let newName = fileExtension.isEmpty ?
+                        "\(nameWithoutExtension) (\(counter))" :
+                        "\(nameWithoutExtension) (\(counter)).\(fileExtension)"
+                    finalDestinationURL = destinationDirectory.appendingPathComponent(newName)
+                    counter += 1
+                }
+
+                do {
+                    try data.write(to: finalDestinationURL)
+                    print("✅ Downloaded and saved file to: \(finalDestinationURL.path)")
+
+                    // Refresh the current directory view
+                    self.fileSystemManager.loadItems(at: self.navigationState.currentPath)
+
+                } catch {
+                    print("❌ Failed to save downloaded file: \(error)")
+                }
+            }
+        }.resume()
     }
 
     private func handleItemTap(_ item: FileSystemItem) {
