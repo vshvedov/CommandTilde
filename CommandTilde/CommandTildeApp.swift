@@ -565,7 +565,7 @@ struct PopoverContentView: View {
                                 .onTapGesture {
                                     handleItemTap(item)
                                 }
-                                .onDrop(of: ["public.file-url", "public.url"], isTargeted: .constant(false)) { providers in
+                                .onDrop(of: ["public.file-url", "public.url", "public.image", "public.png", "public.jpeg", "com.compuserve.gif", "public.tiff", "public.data", "org.webmproject.webp", "public.webp", "public.heic"], isTargeted: .constant(false)) { providers in
                                     // Only allow drops on directories
                                     guard item.isDirectory else { return false }
                                     return handleDropOnFolder(providers: providers, folder: item)
@@ -637,7 +637,7 @@ struct PopoverContentView: View {
         }
         .frame(width: 520, height: 400)
         .background(isDragOver ? Color.blue.opacity(0.1) : Color(NSColor.controlBackgroundColor))
-        .onDrop(of: ["public.file-url", "public.url"], isTargeted: $isDragOver) { providers in
+        .onDrop(of: ["public.file-url", "public.url", "public.image", "public.png", "public.jpeg", "com.compuserve.gif", "public.tiff", "public.data", "org.webmproject.webp", "public.webp", "public.heic"], isTargeted: $isDragOver) { providers in
             handleDrop(providers: providers)
         }
     }
@@ -652,30 +652,142 @@ struct PopoverContentView: View {
     }
 
     private func handleDropToDestination(providers: [NSItemProvider], destination: URL) -> Bool {
+        print("📦 Handling drop with \(providers.count) providers")
+
         for provider in providers {
+            print("🔍 Available types: \(provider.registeredTypeIdentifiers)")
+
+            // Handle local files first
             if provider.hasItemConformingToTypeIdentifier("public.file-url") {
                 provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { (item, error) in
                     DispatchQueue.main.async {
                         if let data = item as? Data,
                            let url = URL(dataRepresentation: data, relativeTo: nil) {
+                            print("✅ Found local file URL: \(url)")
                             self.copyFile(from: url, to: destination)
                         }
                     }
                 }
                 return true
-            } else if provider.hasItemConformingToTypeIdentifier("public.url") {
+            }
+
+            // Handle WebP images specifically
+            else if provider.hasItemConformingToTypeIdentifier("org.webmproject.webp") ||
+                    provider.hasItemConformingToTypeIdentifier("public.webp") {
+                let webpType = provider.hasItemConformingToTypeIdentifier("org.webmproject.webp") ? "org.webmproject.webp" : "public.webp"
+                provider.loadItem(forTypeIdentifier: webpType, options: nil) { (item, error) in
+                    DispatchQueue.main.async {
+                        if let data = item as? Data {
+                            print("✅ Found WebP image data: \(data.count) bytes")
+                            self.saveImageData(data, type: webpType, to: destination)
+                        }
+                    }
+                }
+                return true
+            }
+
+            // Handle direct image data (common for browser drags)
+            else if provider.hasItemConformingToTypeIdentifier("public.image") ||
+                    provider.hasItemConformingToTypeIdentifier("public.png") ||
+                    provider.hasItemConformingToTypeIdentifier("public.jpeg") ||
+                    provider.hasItemConformingToTypeIdentifier("com.compuserve.gif") ||
+                    provider.hasItemConformingToTypeIdentifier("public.tiff") ||
+                    provider.hasItemConformingToTypeIdentifier("public.heic") {
+
+                // Find the most specific image type
+                let imageTypes = ["public.png", "public.jpeg", "com.compuserve.gif", "public.tiff", "public.heic", "public.image"]
+                let availableImageType = imageTypes.first { provider.hasItemConformingToTypeIdentifier($0) }
+
+                if let imageType = availableImageType {
+                    provider.loadItem(forTypeIdentifier: imageType, options: nil) { (item, error) in
+                        DispatchQueue.main.async {
+                            if let error = error {
+                                print("❌ Error loading image: \(error)")
+                                return
+                            }
+
+                            var imageData: Data?
+
+                            // Try different ways to get the data
+                            if let data = item as? Data {
+                                print("✅ Found direct image data (\(imageType)): \(data.count) bytes")
+                                imageData = data
+                            } else if let image = item as? NSImage {
+                                print("🌄 Found NSImage, converting to data...")
+                                imageData = self.convertNSImageToData(image, type: imageType)
+                            } else if let url = item as? URL {
+                                print("🔗 Found image URL: \(url)")
+                                imageData = try? Data(contentsOf: url)
+                            } else {
+                                print("⚠️ Unknown item type: \(type(of: item))")
+                                // Try to load as generic object and convert
+                                if let nsItem = item as? NSSecureCoding {
+                                    print("🔍 Attempting NSSecureCoding conversion...")
+                                    // Try to get image through pasteboard
+                                    if let pasteboardItem = NSPasteboard.general.pasteboardItems?.first {
+                                        if let data = pasteboardItem.data(forType: .tiff) {
+                                            imageData = data
+                                            print("✅ Got image data from pasteboard")
+                                        }
+                                    }
+                                }
+                            }
+
+                            if let data = imageData {
+                                self.saveImageData(data, type: imageType, to: destination)
+                            } else {
+                                print("❌ Failed to extract image data from item")
+                            }
+                        }
+                    }
+                    return true
+                }
+            }
+
+            // Handle URLs (including web URLs)
+            else if provider.hasItemConformingToTypeIdentifier("public.url") {
                 provider.loadItem(forTypeIdentifier: "public.url", options: nil) { (item, error) in
                     DispatchQueue.main.async {
-                        if let data = item as? Data,
-                           let url = URL(dataRepresentation: data, relativeTo: nil) {
-                            // Handle web URLs by downloading the content
-                            self.downloadAndCopyFile(from: url, to: destination)
+                        var targetURL: URL?
+
+                        if let data = item as? Data {
+                            targetURL = URL(dataRepresentation: data, relativeTo: nil)
+                        } else if let urlString = item as? String {
+                            targetURL = URL(string: urlString)
+                        } else if let url = item as? URL {
+                            targetURL = url
+                        }
+
+                        if let url = targetURL {
+                            print("✅ Found URL: \(url)")
+                            if url.scheme == "http" || url.scheme == "https" {
+                                self.downloadAndCopyFile(from: url, to: destination)
+                            } else {
+                                self.copyFile(from: url, to: destination)
+                            }
+                        } else {
+                            print("❌ Failed to parse URL from item: \(String(describing: item))")
+                        }
+                    }
+                }
+                return true
+            }
+
+            // Handle generic data as fallback
+            else if provider.hasItemConformingToTypeIdentifier("public.data") {
+                provider.loadItem(forTypeIdentifier: "public.data", options: nil) { (item, error) in
+                    DispatchQueue.main.async {
+                        if let data = item as? Data {
+                            print("✅ Found generic data: \(data.count) bytes")
+                            self.saveGenericData(data, to: destination)
                         }
                     }
                 }
                 return true
             }
         }
+
+        print("❌ No supported data types found in providers")
         return false
     }
 
@@ -777,6 +889,102 @@ struct PopoverContentView: View {
                 }
             }
         }.resume()
+    }
+
+    private func convertNSImageToData(_ image: NSImage, type: String) -> Data? {
+        // Try to get the best representation based on the type
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            print("❌ Failed to get CGImage from NSImage")
+            return nil
+        }
+
+        let bitmap = NSBitmapImageRep(cgImage: cgImage)
+
+        switch type {
+        case "public.png":
+            return bitmap.representation(using: .png, properties: [:])
+        case "public.jpeg":
+            return bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.9])
+        case "com.compuserve.gif":
+            return bitmap.representation(using: .gif, properties: [:])
+        case "public.tiff":
+            return bitmap.representation(using: .tiff, properties: [:])
+        default:
+            // Default to PNG for unknown types
+            return bitmap.representation(using: .png, properties: [:])
+        }
+    }
+
+    private func saveImageData(_ data: Data, type: String, to destinationDirectory: URL) {
+        // Determine file extension from UTI type
+        let fileExtension: String
+        switch type {
+        case "public.png":
+            fileExtension = "png"
+        case "public.jpeg":
+            fileExtension = "jpg"
+        case "com.compuserve.gif":
+            fileExtension = "gif"
+        case "public.tiff":
+            fileExtension = "tiff"
+        case "org.webmproject.webp", "public.webp":
+            fileExtension = "webp"
+        case "public.heic":
+            fileExtension = "heic"
+        default:
+            fileExtension = "png" // Default fallback
+        }
+
+        let fileName = "dropped_image.\(fileExtension)"
+        let destinationURL = destinationDirectory.appendingPathComponent(fileName)
+
+        // Check if file already exists and create unique name if needed
+        var finalDestinationURL = destinationURL
+        var counter = 1
+
+        while FileManager.default.fileExists(atPath: finalDestinationURL.path) {
+            let nameWithoutExtension = "dropped_image"
+            let newName = "\(nameWithoutExtension) (\(counter)).\(fileExtension)"
+            finalDestinationURL = destinationDirectory.appendingPathComponent(newName)
+            counter += 1
+        }
+
+        do {
+            try data.write(to: finalDestinationURL)
+            print("✅ Saved image data to: \(finalDestinationURL.path)")
+
+            // Refresh the current directory view
+            fileSystemManager.loadItems(at: navigationState.currentPath)
+
+        } catch {
+            print("❌ Failed to save image data: \(error)")
+        }
+    }
+
+    private func saveGenericData(_ data: Data, to destinationDirectory: URL) {
+        let fileName = "dropped_file"
+        let destinationURL = destinationDirectory.appendingPathComponent(fileName)
+
+        // Check if file already exists and create unique name if needed
+        var finalDestinationURL = destinationURL
+        var counter = 1
+
+        while FileManager.default.fileExists(atPath: finalDestinationURL.path) {
+            let newName = "\(fileName) (\(counter))"
+            finalDestinationURL = destinationDirectory.appendingPathComponent(newName)
+            counter += 1
+        }
+
+        do {
+            try data.write(to: finalDestinationURL)
+            print("✅ Saved generic data to: \(finalDestinationURL.path)")
+
+            // Refresh the current directory view
+            fileSystemManager.loadItems(at: navigationState.currentPath)
+
+        } catch {
+            print("❌ Failed to save generic data: \(error)")
+        }
     }
 
     private func handleItemTap(_ item: FileSystemItem) {
