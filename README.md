@@ -1,8 +1,6 @@
 # CommandTilde
 
-## Press `Cmd-tilde`.
-
-### CommandTilde is a macOS menu bar companion that keeps frequently used files and folders only a hotkey away.
+### CommandTilde is a macOS menu bar app that keeps frequently used files and folders in a easily accessible stash.
 
 Think of CommandTilde like of a small stash where you keep your meme gifs, use to unclutter desktop, or drag-and-drop images and text chunks from a browser during a research.
 
