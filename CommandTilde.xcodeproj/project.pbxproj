@@ -16,6 +16,11 @@
 			path = CommandTilde;
 			sourceTree = "<group>";
 		};
+		4BBC20382E864679001C1130 /* Sounds */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Sounds;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -34,6 +39,7 @@
 			children = (
 				4BBC201D2E860FB6001C1130 /* CommandTilde */,
 				4BBC201C2E860FB6001C1130 /* Products */,
+				4BBC20382E864679001C1130 /* Sounds */,
 			);
 			sourceTree = "<group>";
 		};
@@ -62,6 +68,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				4BBC201D2E860FB6001C1130 /* CommandTilde */,
+				4BBC20382E864679001C1130 /* Sounds */,
 			);
 			name = CommandTilde;
 			packageProductDependencies = (
