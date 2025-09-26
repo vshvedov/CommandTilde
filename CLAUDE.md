@@ -23,18 +23,22 @@ CommandTilde is a macOS menu bar application built with SwiftUI that provides a 
   - Loads and monitors subdirectories
   - Provides observable directory list for UI updates
 - **PopoverContentView**: SwiftUI view that displays:
-  - App title and description
-  - List of subdirectories from CommandTilde home folder
+  - Grid of subdirectories as 64x64 icons
+  - Directory names below each icon
   - Refresh button to reload directory contents
+  - Empty state with helpful instructions
 
 ### Key Technical Details
 
 - **Global Hotkey**: Uses NSEvent monitors to capture Command+` system-wide
 - **Accessibility**: Requires accessibility permissions for global hotkey functionality
 - **Directory Management**: Uses FileManager to access user's home directory
-- **UI Framework**: SwiftUI with NSHostingController for popover content
+- **File System Monitoring**: Uses DispatchSource.makeFileSystemObjectSource for real-time directory changes
+- **Icon Loading**: Uses NSWorkspace.shared.icon() to get system folder icons at 64x64 resolution
+- **UI Framework**: SwiftUI with NSHostingController for popover content, LazyVGrid for icon layout
 - **App Behavior**: Configured as `.accessory` to hide from dock and run in background
 - **Data Storage**: Creates and manages "CommandTilde" folder in user's home directory (~)
+- **Click Actions**: Clicking directory icons opens them in Finder
 
 ## Development Commands
 
@@ -57,15 +61,19 @@ xcodebuild -project CommandTilde.xcodeproj -scheme CommandTilde -configuration R
 - **Development Team**: G29V3JRMJJ
 - **Sandboxing**: Disabled to allow home directory access
 - **Entitlements**: Minimal configuration for debugging
+- **Popover Size**: 520x400 pixels to accommodate icon grid
 
 ## Development Notes
 
 - The app uses modern Swift concurrency features with MainActor isolation
 - SwiftUI previews are enabled for UI development
 - The status bar icon displays "⌘~" with monospaced font
-- Popover dimensions are fixed at 500x300 pixels
+- Popover dimensions are fixed at 520x400 pixels to accommodate icon grid
 - Global event monitoring requires accessibility permissions which are requested at launch
 - CommandTilde folder creation happens automatically on first launch
-- The app will display all subdirectories found in ~/CommandTilde/
-- Directory listing refreshes automatically when popover opens and can be manually refreshed
+- The app displays subdirectories as 64x64 icons in a 4-column grid
+- Icons are loaded from system using NSWorkspace for authentic folder appearances
+- Directory listing refreshes automatically via file system monitoring and manual refresh button
+- Clicking folder icons opens them directly in Finder
+- Real-time monitoring detects new/deleted folders without needing manual refresh
 - App runs without sandboxing to allow direct home directory access

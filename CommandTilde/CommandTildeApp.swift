@@ -10,9 +10,16 @@ import AppKit
 import Foundation
 import Combine
 
+struct DirectoryItem {
+    let name: String
+    let icon: NSImage
+    let url: URL
+}
+
 class DirectoryManager: ObservableObject {
-    @Published var directories: [String] = []
+    @Published var directories: [DirectoryItem] = []
     private let folderName = "CommandTilde"
+    private var fileSystemWatcher: DispatchSourceFileSystemObject?
 
     var commandTildeURL: URL {
         let homeURL = FileManager.default.homeDirectoryForCurrentUser
@@ -39,6 +46,39 @@ class DirectoryManager: ObservableObject {
         }
 
         loadDirectories()
+        setupFileSystemWatcher()
+    }
+
+    private func setupFileSystemWatcher() {
+        let commandTildeURL = commandTildeURL
+
+        let fileDescriptor = open(commandTildeURL.path, O_EVTONLY)
+        guard fileDescriptor >= 0 else {
+            print("❌ Failed to open directory for monitoring")
+            return
+        }
+
+        fileSystemWatcher = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fileDescriptor,
+            eventMask: .write,
+            queue: DispatchQueue.main
+        )
+
+        fileSystemWatcher?.setEventHandler { [weak self] in
+            print("📁 Directory changed, reloading...")
+            self?.loadDirectories()
+        }
+
+        fileSystemWatcher?.setCancelHandler {
+            close(fileDescriptor)
+        }
+
+        fileSystemWatcher?.resume()
+        print("👀 Started monitoring CommandTilde directory for changes")
+    }
+
+    deinit {
+        fileSystemWatcher?.cancel()
     }
 
     func loadDirectories() {
@@ -49,12 +89,111 @@ class DirectoryManager: ObservableObject {
 
             directories = contents.compactMap { url in
                 let isDirectory = try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory
-                return isDirectory == true ? url.lastPathComponent : nil
-            }.sorted()
+                guard isDirectory == true else { return nil }
+
+                let icon = getIconForDirectory(at: url)
+                return DirectoryItem(name: url.lastPathComponent, icon: icon, url: url)
+            }.sorted { $0.name < $1.name }
 
         } catch {
             print("Failed to load directories: \(error)")
             directories = []
+        }
+    }
+
+    private func getIconForDirectory(at url: URL) -> NSImage {
+        let icon = NSWorkspace.shared.icon(forFile: url.path)
+        icon.size = NSSize(width: 64, height: 64)
+        return icon
+    }
+}
+
+class SettingsWindowController: NSObject, NSWindowDelegate {
+    static let shared = SettingsWindowController()
+    private var window: NSWindow?
+
+    private override init() {}
+
+    func showWindow() {
+        if window == nil {
+            let settingsView = SettingsView()
+            let hostingController = NSHostingController(rootView: settingsView)
+
+            window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+                styleMask: [.titled, .closable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+
+            window?.title = "CommandTilde Settings"
+            window?.contentViewController = hostingController
+            window?.center()
+            window?.setFrameAutosaveName("SettingsWindow")
+            window?.delegate = self
+        }
+
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        if let closingWindow = notification.object as? NSWindow, closingWindow == window {
+            // Remove delegate reference immediately to prevent callback issues
+            closingWindow.delegate = nil
+        }
+    }
+
+    func windowDidClose(_ notification: Notification) {
+        if let closingWindow = notification.object as? NSWindow, closingWindow == window {
+            DispatchQueue.main.async { [weak self] in
+                self?.window = nil
+            }
+        }
+    }
+}
+
+class AboutWindowController: NSObject, NSWindowDelegate {
+    static let shared = AboutWindowController()
+    private var window: NSWindow?
+
+    private override init() {}
+
+    func showWindow() {
+        if window == nil {
+            let aboutView = AboutView()
+            let hostingController = NSHostingController(rootView: aboutView)
+
+            window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 350, height: 200),
+                styleMask: [.titled, .closable],
+                backing: .buffered,
+                defer: false
+            )
+
+            window?.title = "About CommandTilde"
+            window?.contentViewController = hostingController
+            window?.center()
+            window?.isRestorable = false
+            window?.delegate = self
+        }
+
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        if let closingWindow = notification.object as? NSWindow, closingWindow == window {
+            // Remove delegate reference immediately to prevent callback issues
+            closingWindow.delegate = nil
+        }
+    }
+
+    func windowDidClose(_ notification: Notification) {
+        if let closingWindow = notification.object as? NSWindow, closingWindow == window {
+            DispatchQueue.main.async { [weak self] in
+                self?.window = nil
+            }
         }
     }
 }
@@ -101,7 +240,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Initialize popover
         popover = NSPopover()
-        popover.contentSize = NSSize(width: 500, height: 300)
+        popover.contentSize = NSSize(width: 520, height: 400)
         popover.behavior = .transient
         popover.animates = true
 
@@ -181,66 +320,139 @@ struct PopoverContentView: View {
     @ObservedObject var directoryManager: DirectoryManager
 
     var body: some View {
-        VStack(spacing: 20) {
-            Text("Command Tilde")
-                .font(.largeTitle)
-                .fontWeight(.bold)
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Text("CommandTilde Folders")
+                    .font(.headline)
+                    .fontWeight(.semibold)
 
-            Text("This is the Command Tilde popup")
-                .font(.body)
-                .foregroundColor(.secondary)
+                Spacer()
 
-            Divider()
-
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Label("CommandTilde Folders", systemImage: "folder.fill")
-                        .font(.headline)
-
-                    Spacer()
-
-                    Button(action: {
-                        directoryManager.loadDirectories()
-                    }) {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .buttonStyle(BorderlessButtonStyle())
+                Button(action: {
+                    directoryManager.loadDirectories()
+                }) {
+                    Image(systemName: "arrow.clockwise")
+                        .imageScale(.medium)
                 }
+                .buttonStyle(BorderlessButtonStyle())
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 16)
 
+            // Content Area
+            VStack {
                 if directoryManager.directories.isEmpty {
-                    Text("No folders found in CommandTilde")
-                        .foregroundColor(.secondary)
-                        .italic()
+                    VStack(spacing: 12) {
+                        Image(systemName: "folder.badge.plus")
+                            .font(.system(size: 40))
+                            .foregroundColor(.secondary)
+
+                        Text("No folders found")
+                            .font(.body)
+                            .foregroundColor(.secondary)
+
+                        Text("Create folders in ~/CommandTilde/")
+                            .font(.caption)
+                            .foregroundColor(.secondary.opacity(0.7))
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 6) {
-                            ForEach(directoryManager.directories, id: \.self) { directory in
-                                HStack {
-                                    Image(systemName: "folder")
-                                        .foregroundColor(.blue)
-                                    Text(directory)
-                                        .font(.body)
-                                    Spacer()
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16), count: 4), spacing: 16) {
+                            ForEach(directoryManager.directories, id: \.name) { directory in
+                                VStack(spacing: 8) {
+                                    Image(nsImage: directory.icon)
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fit)
+                                        .frame(width: 64, height: 64)
+
+                                    Text(directory.name)
+                                        .font(.caption)
+                                        .lineLimit(2)
+                                        .multilineTextAlignment(.center)
+                                        .truncationMode(.middle)
+                                        .frame(width: 80)
                                 }
-                                .padding(.vertical, 4)
-                                .padding(.horizontal, 8)
+                                .padding(.vertical, 8)
                                 .background(Color.clear)
-                                .cornerRadius(6)
                                 .onTapGesture {
-                                    // Future: Open folder or perform action
-                                    print("Tapped folder: \(directory)")
+                                    print("Tapped folder: \(directory.name)")
+                                    NSWorkspace.shared.open(directory.url)
+                                }
+                                .onHover { isHovered in
+                                    // Add subtle hover effect if needed
                                 }
                             }
                         }
+                        .padding(.horizontal, 8)
                     }
-                    .frame(maxHeight: 150)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
 
-            Spacer()
+            // Bottom Toolbar
+            Divider()
+
+            HStack(spacing: 20) {
+                Button(action: {
+                    openSettingsWindow()
+                }) {
+                    Image(systemName: "gearshape")
+                        .imageScale(.medium)
+                }
+                .buttonStyle(BorderlessButtonStyle())
+                .help("Settings")
+
+                Spacer()
+
+                Button(action: {
+                    openAboutWindow()
+                }) {
+                    Image(systemName: "questionmark.circle")
+                        .imageScale(.medium)
+                }
+                .buttonStyle(BorderlessButtonStyle())
+                .help("About")
+
+                Spacer()
+
+                Button(action: {
+                    confirmQuit()
+                }) {
+                    Image(systemName: "power")
+                        .imageScale(.medium)
+                }
+                .buttonStyle(BorderlessButtonStyle())
+                .help("Quit CommandTilde")
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
         }
-        .padding()
-        .frame(width: 500, height: 300)
+        .frame(width: 520, height: 400)
         .background(Color(NSColor.controlBackgroundColor))
+    }
+
+    private func openSettingsWindow() {
+        SettingsWindowController.shared.showWindow()
+    }
+
+    private func openAboutWindow() {
+        AboutWindowController.shared.showWindow()
+    }
+
+    private func confirmQuit() {
+        let alert = NSAlert()
+        alert.messageText = "Quit CommandTilde?"
+        alert.informativeText = "Are you sure you want to quit CommandTilde?"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Quit")
+        alert.addButton(withTitle: "Cancel")
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSApplication.shared.terminate(nil)
+        }
     }
 }
