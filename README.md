@@ -18,7 +18,7 @@ Made with 🍵 by [Vladyslav Shvedov](https://vlad.codes)
 
 ## License
 
-The app comes with a simple, no-nonsense license you can read in one breath. In short: you’re free to use the code, tweak it, and run the app—just not for commercial gain. Keep it free, keep it good.
+The app comes with a simple, no-nonsense license you can read in one breath. In short: you’re free to use the code, tweak it, and share the app—just not for commercial gain. Keep it free, keep it good.
 
 CommandTilde License
 
