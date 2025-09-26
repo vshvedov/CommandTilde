@@ -527,11 +527,6 @@ struct PopoverContentView: View {
                                         .resizable()
                                         .aspectRatio(contentMode: .fit)
                                         .frame(width: 64, height: 64)
-                                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 8)
-                                                .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
-                                        )
 
                                     VStack(spacing: 2) {
                                         Text(item.name)
