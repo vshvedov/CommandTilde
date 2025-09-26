@@ -32,6 +32,7 @@ class SettingsWindowController: NSObject, NSWindowDelegate {
         window.title = "CommandTilde Settings"
         window.contentViewController = hostingController
         window.delegate = self
+        window.isReleasedWhenClosed = false
 
         // Make window appear above other windows but not always on top
         window.level = NSWindow.Level.floating
@@ -41,8 +42,10 @@ class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     func show() {
+        centerOnMainScreen()
         NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(self)
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
     }
 
     func hide() {
@@ -54,6 +57,19 @@ class SettingsWindowController: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         // Window is closing, we can perform cleanup if needed
         NSApp.activate(ignoringOtherApps: false)
+    }
+
+    private func centerOnMainScreen() {
+        guard let screen = NSScreen.main else {
+            window.center()
+            return
+        }
+
+        var frame = window.frame
+        let visibleFrame = screen.visibleFrame
+        frame.origin.x = visibleFrame.midX - (frame.width / 2)
+        frame.origin.y = visibleFrame.midY - (frame.height / 2)
+        window.setFrame(frame, display: false)
     }
 }
 
@@ -80,6 +96,7 @@ class AboutWindowController: NSObject, NSWindowDelegate {
         window.title = "About CommandTilde"
         window.contentViewController = hostingController
         window.delegate = self
+        window.isReleasedWhenClosed = false
 
         // Make window appear above other windows but not always on top
         window.level = NSWindow.Level.floating
@@ -90,8 +107,10 @@ class AboutWindowController: NSObject, NSWindowDelegate {
     }
 
     func show() {
+        centerOnMainScreen()
         NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(self)
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
     }
 
     func hide() {
@@ -103,5 +122,18 @@ class AboutWindowController: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         // Window is closing, we can perform cleanup if needed
         NSApp.activate(ignoringOtherApps: false)
+    }
+
+    private func centerOnMainScreen() {
+        guard let screen = NSScreen.main else {
+            window.center()
+            return
+        }
+
+        var frame = window.frame
+        let visibleFrame = screen.visibleFrame
+        frame.origin.x = visibleFrame.midX - (frame.width / 2)
+        frame.origin.y = visibleFrame.midY - (frame.height / 2)
+        window.setFrame(frame, display: false)
     }
 }

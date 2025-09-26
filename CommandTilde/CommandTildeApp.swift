@@ -158,6 +158,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Menu Actions
 
     @objc func showSettings() {
+        if popover?.isShown == true {
+            popover.performClose(nil)
+        }
         if settingsWindowController == nil {
             settingsWindowController = SettingsWindowController()
         }
@@ -165,6 +168,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func showAbout() {
+        if popover?.isShown == true {
+            popover.performClose(nil)
+        }
         if aboutWindowController == nil {
             aboutWindowController = AboutWindowController()
         }
