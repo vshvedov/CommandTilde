@@ -110,91 +110,94 @@ class DirectoryManager: ObservableObject {
 
 class SettingsWindowController: NSObject, NSWindowDelegate {
     static let shared = SettingsWindowController()
+
     private var window: NSWindow?
+    private var hostingController: NSHostingController<SettingsView>?
 
     private override init() {}
 
     func showWindow() {
-        if window == nil {
-            let settingsView = SettingsView()
-            let hostingController = NSHostingController(rootView: settingsView)
-
-            window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 480, height: 320),
-                styleMask: [.titled, .closable],
-                backing: .buffered,
-                defer: false
-            )
-
-            window?.title = "CommandTilde Settings"
-            window?.contentViewController = hostingController
-            window?.center()
-            window?.setFrameAutosaveName("SettingsWindow")
-            window?.delegate = self
+        if let existingWindow = window {
+            existingWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
         }
 
-        window?.makeKeyAndOrderFront(nil)
+        let settingsView = SettingsView()
+        let hostingController = NSHostingController(rootView: settingsView)
+        self.hostingController = hostingController
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 320),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+
+        window.title = "CommandTilde Settings"
+        window.contentViewController = hostingController
+        window.isReleasedWhenClosed = false // ARC manages lifetime; avoid double-release
+        window.isRestorable = false
+        window.delegate = self
+        window.center()
+
+        self.window = window
+
+        window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func windowWillClose(_ notification: Notification) {
-        if let closingWindow = notification.object as? NSWindow, closingWindow == window {
-            // Remove delegate reference immediately to prevent callback issues
-            closingWindow.delegate = nil
-        }
-    }
-
-    private func windowDidClose(_ notification: Notification) {
-        if let closingWindow = notification.object as? NSWindow, closingWindow == window {
-            DispatchQueue.main.async { [weak self] in
-                self?.window = nil
-            }
-        }
+        guard let closingWindow = notification.object as? NSWindow, closingWindow == window else { return }
+        closingWindow.delegate = nil
+        // Break potential retain cycles and release references on close
+        hostingController = nil
+        window = nil
     }
 }
 
 class AboutWindowController: NSObject, NSWindowDelegate {
     static let shared = AboutWindowController()
     private var window: NSWindow?
+    private var hostingController: NSHostingController<AboutView>?
 
     private override init() {}
 
     func showWindow() {
-        if window == nil {
-            let aboutView = AboutView()
-            let hostingController = NSHostingController(rootView: aboutView)
-
-            window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 360, height: 320),
-                styleMask: [.titled, .closable],
-                backing: .buffered,
-                defer: false
-            )
-
-            window?.title = "About CommandTilde"
-            window?.contentViewController = hostingController
-            window?.center()
-            window?.isRestorable = false
-            window?.delegate = self
+        if let existingWindow = window {
+            existingWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
         }
+
+        let aboutView = AboutView()
+        let hostingController = NSHostingController(rootView: aboutView)
+        self.hostingController = hostingController
+
+        window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 320),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+
+        window?.title = "About CommandTilde"
+        window?.contentViewController = hostingController
+        window?.isReleasedWhenClosed = false
+        window?.isRestorable = false
+        window?.delegate = self
+        window?.center()
 
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func windowWillClose(_ notification: Notification) {
-        if let closingWindow = notification.object as? NSWindow, closingWindow == window {
-            // Remove delegate reference immediately to prevent callback issues
-            closingWindow.delegate = nil
-        }
-    }
-
-    private func windowDidClose(_ notification: Notification) {
-        if let closingWindow = notification.object as? NSWindow, closingWindow == window {
-            DispatchQueue.main.async { [weak self] in
-                self?.window = nil
-            }
-        }
+        guard let closingWindow = notification.object as? NSWindow, closingWindow == window else { return }
+        closingWindow.delegate = nil
+        // Break potential retain cycles and release references on close
+        hostingController = nil
+        window = nil
     }
 }
 
@@ -398,37 +401,37 @@ struct PopoverContentView: View {
             // Bottom Toolbar
             Divider()
 
-            HStack(spacing: 20) {
-                Button(action: {
-                    openSettingsWindow()
-                }) {
-                    Image(systemName: "gearshape")
-                        .imageScale(.medium)
-                }
-                .buttonStyle(BorderlessButtonStyle())
-                .help("Settings")
-
+            HStack {
                 Spacer()
 
-                Button(action: {
-                    openAboutWindow()
-                }) {
-                    Image(systemName: "questionmark.circle")
-                        .imageScale(.medium)
-                }
-                .buttonStyle(BorderlessButtonStyle())
-                .help("About")
+                HStack(spacing: 20) {
+                    Button(action: {
+                        openSettingsWindow()
+                    }) {
+                        Image(systemName: "gearshape")
+                            .imageScale(.medium)
+                    }
+                    .buttonStyle(BorderlessButtonStyle())
+                    .help("Settings")
 
-                Spacer()
+                    Button(action: {
+                        openAboutWindow()
+                    }) {
+                        Image(systemName: "questionmark.circle")
+                            .imageScale(.medium)
+                    }
+                    .buttonStyle(BorderlessButtonStyle())
+                    .help("About")
 
-                Button(action: {
-                    confirmQuit()
-                }) {
-                    Image(systemName: "power")
-                        .imageScale(.medium)
+                    Button(action: {
+                        confirmQuit()
+                    }) {
+                        Image(systemName: "power")
+                            .imageScale(.medium)
+                    }
+                    .buttonStyle(BorderlessButtonStyle())
+                    .help("Quit CommandTilde")
                 }
-                .buttonStyle(BorderlessButtonStyle())
-                .help("Quit CommandTilde")
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
